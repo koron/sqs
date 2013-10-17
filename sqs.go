@@ -10,13 +10,14 @@
 package sqs
 
 import (
-	"http"
-	"xml"
-	"url"
-	"os"
-	"time"
-	"strconv"
+	"encoding/xml"
+	"io"
+	"io/ioutil"
 	"launchpad.net/goamz/aws"
+	"net/http"
+	"net/url"
+	"strconv"
+	"time"
 )
 
 // The SQS type encapsulates operation with an SQS region.
@@ -98,7 +99,7 @@ type Error struct {
 	RequestId  string
 }
 
-func (err *Error) String() string {
+func (err *Error) Error() string {
 	return err.Message
 }
 
@@ -107,11 +108,11 @@ type xmlErrors struct {
 	Errors    []Error `xml:"Errors>Error"`
 }
 
-func (s *SQS) CreateQueue(queueName string) (*Queue, os.Error) {
+func (s *SQS) CreateQueue(queueName string) (*Queue, error) {
 	return s.CreateQueueWithTimeout(queueName, 30)
 }
 
-func (s *SQS) CreateQueueWithTimeout(queueName string, timeout int) (q *Queue, err os.Error) {
+func (s *SQS) CreateQueueWithTimeout(queueName string, timeout int) (q *Queue, err error) {
 	resp, err := s.newQueue(queueName, timeout)
 	if err != nil {
 		return nil, err
@@ -125,7 +126,7 @@ func (s *SQS) QueueFromArn(queueUrl string) (q *Queue) {
     return
 }
 
-func (s *SQS) newQueue(queueName string, timeout int) (resp *CreateQueueResponse, err os.Error) {
+func (s *SQS) newQueue(queueName string, timeout int) (resp *CreateQueueResponse, err error) {
 	resp = &CreateQueueResponse{}
 	params := makeParams("CreateQueue")
 
@@ -136,7 +137,7 @@ func (s *SQS) newQueue(queueName string, timeout int) (resp *CreateQueueResponse
 	return
 }
 
-func (s *SQS) ListQueues(QueueNamePrefix string) (resp *ListQueuesResponse, err os.Error) {
+func (s *SQS) ListQueues(QueueNamePrefix string) (resp *ListQueuesResponse, err error) {
 	resp = &ListQueuesResponse{}
 	params := makeParams("ListQueues")
 
@@ -148,7 +149,7 @@ func (s *SQS) ListQueues(QueueNamePrefix string) (resp *ListQueuesResponse, err 
 	return
 }
 
-func (q *Queue) Delete() (resp *DeleteQueueResponse, err os.Error) {
+func (q *Queue) Delete() (resp *DeleteQueueResponse, err error) {
 	resp = &DeleteQueueResponse{}
 	params := makeParams("DeleteQueue")
 
@@ -156,7 +157,7 @@ func (q *Queue) Delete() (resp *DeleteQueueResponse, err os.Error) {
 	return
 }
 
-func (q *Queue) SendMessage(MessageBody string) (resp *SendMessageResponse, err os.Error) {
+func (q *Queue) SendMessage(MessageBody string) (resp *SendMessageResponse, err error) {
 	resp = &SendMessageResponse{}
 	params := makeParams("SendMessage")
 
@@ -166,7 +167,7 @@ func (q *Queue) SendMessage(MessageBody string) (resp *SendMessageResponse, err 
 	return
 }
 
-func (q *Queue) ReceiveMessage(MaxNumberOfMessages, VisibilityTimeout int) (resp *ReceiveMessageResponse, err os.Error) {
+func (q *Queue) ReceiveMessage(MaxNumberOfMessages, VisibilityTimeout int) (resp *ReceiveMessageResponse, err error) {
 	resp = &ReceiveMessageResponse{}
 	params := makeParams("ReceiveMessage")
 
@@ -178,7 +179,7 @@ func (q *Queue) ReceiveMessage(MaxNumberOfMessages, VisibilityTimeout int) (resp
 	return
 }
 
-func (q *Queue) ChangeMessageVisibility(M *Message, VisibilityTimeout int) (resp *ChangeMessageVisibilityResponse, err os.Error) {
+func (q *Queue) ChangeMessageVisibility(M *Message, VisibilityTimeout int) (resp *ChangeMessageVisibilityResponse, err error) {
 	resp = &ChangeMessageVisibilityResponse{}
 	params := makeParams("ChangeMessageVisibility")
 	params["VisibilityTimeout"] = strconv.Itoa(VisibilityTimeout)
@@ -188,7 +189,7 @@ func (q *Queue) ChangeMessageVisibility(M *Message, VisibilityTimeout int) (resp
 	return
 }
 
-func (q *Queue) GetQueueAttributes(A string) (resp *GetQueueAttributesResponse, err os.Error) {
+func (q *Queue) GetQueueAttributes(A string) (resp *GetQueueAttributesResponse, err error) {
 	resp = &GetQueueAttributesResponse{}
 	params := makeParams("GetQueueAttributes")
 	params["AttributeName"] = A
@@ -197,7 +198,7 @@ func (q *Queue) GetQueueAttributes(A string) (resp *GetQueueAttributesResponse, 
 	return
 }
 
-func (q *Queue) DeleteMessage(M *Message) (resp *DeleteMessageResponse, err os.Error) {
+func (q *Queue) DeleteMessage(M *Message) (resp *DeleteMessageResponse, err error) {
 	resp = &DeleteMessageResponse{}
 	params := makeParams("DeleteMessage")
 	params["ReceiptHandle"] = M.ReceiptHandle
@@ -206,10 +207,18 @@ func (q *Queue) DeleteMessage(M *Message) (resp *DeleteMessageResponse, err os.E
 	return
 }
 
-func (s *SQS) query(queueUrl string, params map[string]string, resp interface{}) os.Error {
-	params["Timestamp"] = time.UTC().Format(time.RFC3339)
+func xmlUnmarshal(r io.Reader, v interface{}) (err error) {
+	bytes, err := ioutil.ReadAll(r)
+	if err == nil {
+		err = xml.Unmarshal(bytes, v)
+	}
+	return
+}
+
+func (s *SQS) query(queueUrl string, params map[string]string, resp interface{}) error {
+	params["Timestamp"] = time.Now().UTC().Format(time.RFC3339)
 	var url_ *url.URL
-	var err os.Error
+	var err error
 	var path string
 	if queueUrl != "" {
 		url_, err = url.Parse(queueUrl)
@@ -242,13 +251,13 @@ func (s *SQS) query(queueUrl string, params map[string]string, resp interface{})
 	if r.StatusCode != 200 {
 		return buildError(r)
 	}
-	err = xml.Unmarshal(r.Body, resp)
+	err = xmlUnmarshal(r.Body, resp)
 	return err
 }
 
-func buildError(r *http.Response) os.Error {
+func buildError(r *http.Response) error {
 	errors := xmlErrors{}
-	xml.Unmarshal(r.Body, &errors)
+	xmlUnmarshal(r.Body, &errors)
 	var err Error
 	if len(errors.Errors) > 0 {
 		err = errors.Errors[0]
